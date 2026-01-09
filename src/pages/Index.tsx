@@ -1,14 +1,33 @@
-// Update this page (the content is just a fallback if you fail to update the page)
+import { useState } from "react";
+import { InterviewSetup } from "@/components/InterviewSetup";
+import { InterviewChat } from "@/components/InterviewChat";
+import { ExperienceLevel } from "@/components/ExperienceLevelCard";
+
+interface InterviewData {
+  resume: File;
+  experienceLevel: ExperienceLevel;
+  jobDescription: string | null;
+}
 
 const Index = () => {
-  return (
-    <div className="flex min-h-screen items-center justify-center bg-background">
-      <div className="text-center">
-        <h1 className="mb-4 text-4xl font-bold">Welcome to Your Blank App</h1>
-        <p className="text-xl text-muted-foreground">Start building your amazing project here!</p>
-      </div>
-    </div>
-  );
+  const [interviewData, setInterviewData] = useState<InterviewData | null>(null);
+  const [isInterviewActive, setIsInterviewActive] = useState(false);
+
+  const handleStartInterview = (data: InterviewData) => {
+    setInterviewData(data);
+    setIsInterviewActive(true);
+  };
+
+  const handleEndInterview = () => {
+    setIsInterviewActive(false);
+    setInterviewData(null);
+  };
+
+  if (isInterviewActive) {
+    return <InterviewChat onEndInterview={handleEndInterview} />;
+  }
+
+  return <InterviewSetup onStartInterview={handleStartInterview} />;
 };
 
 export default Index;
