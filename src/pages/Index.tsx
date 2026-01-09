@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { InterviewSetup } from "@/components/InterviewSetup";
-import { InterviewChat } from "@/components/InterviewChat";
+import { VoiceInterview } from "@/components/VoiceInterview";
 import { ExperienceLevel } from "@/components/ExperienceLevelCard";
 
 interface InterviewData {
-  resume: File;
+  resumeFile: File;
+  resumeText: string;
   experienceLevel: ExperienceLevel;
-  jobDescription: string | null;
+  jobDescription: string;
 }
 
 const Index = () => {
@@ -23,8 +24,15 @@ const Index = () => {
     setInterviewData(null);
   };
 
-  if (isInterviewActive) {
-    return <InterviewChat onEndInterview={handleEndInterview} />;
+  if (isInterviewActive && interviewData) {
+    return (
+      <VoiceInterview
+        resumeText={interviewData.resumeText}
+        experienceLevel={interviewData.experienceLevel}
+        jobDescription={interviewData.jobDescription}
+        onEndInterview={handleEndInterview}
+      />
+    );
   }
 
   return <InterviewSetup onStartInterview={handleStartInterview} />;
