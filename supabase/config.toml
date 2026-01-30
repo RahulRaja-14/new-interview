@@ -1,1 +1,16 @@
 project_id = "ukejhrnhkjyfqlbvvnfl"
+
+[functions.elevenlabs-tts]
+verify_jwt = false
+
+[functions.generate-job-description]
+verify_jwt = false
+
+[functions.interview-chat]
+verify_jwt = false
+
+[functions.parse-resume]
+verify_jwt = false
+
+[functions.gd-chat]
+verify_jwt = false
