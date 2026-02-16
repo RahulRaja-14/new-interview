@@ -29,9 +29,10 @@ const PARTICIPANTS = [
 ];
 
 export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscussionProps) {
-  const [isListening, setIsListening] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
   const [isStarted, setIsStarted] = useState(false);
   const [currentTranscript, setCurrentTranscript] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -41,7 +42,9 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
   const [turnCount, setTurnCount] = useState(0);
   const [cameraActive, setCameraActive] = useState(false);
 
-  const recognitionRef = useRef<any>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -55,25 +58,50 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
     scrollToBottom();
   }, [messages]);
 
-  // Initialize speech recognition
-  const initSpeechRecognition = useCallback(() => {
-    const win = window as any;
-    if (!("webkitSpeechRecognition" in window) && !("SpeechRecognition" in window)) {
+  // Transcribe audio via Whisper
+  const transcribeAudio = useCallback(async (audioBlob: Blob): Promise<string> => {
+    setIsTranscribing(true);
+    try {
+      const formData = new FormData();
+      formData.append("audio", audioBlob, "recording.webm");
+
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whisper-transcribe`,
+        {
+          method: "POST",
+          headers: {
+            apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          },
+          body: formData,
+        }
+      );
+
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || "Transcription failed");
+      }
+
+      const data = await response.json();
+      if (data.loading) {
+        toast({
+          title: "Model Loading",
+          description: "Whisper model is warming up. Please try again in a moment.",
+        });
+        return "";
+      }
+      return data.text || "";
+    } catch (error) {
+      console.error("Transcription error:", error);
       toast({
         variant: "destructive",
-        title: "Speech Recognition Not Supported",
-        description: "Please use Chrome or Edge browser.",
+        title: "Transcription Error",
+        description: "Failed to transcribe audio.",
       });
-      return null;
+      return "";
+    } finally {
+      setIsTranscribing(false);
     }
-
-    const SpeechRecognitionClass = win.SpeechRecognition || win.webkitSpeechRecognition;
-    const recognition = new SpeechRecognitionClass();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = "en-US";
-
-    return recognition;
   }, [toast]);
 
   // Text to speech
@@ -91,9 +119,8 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
             apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
             Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
           },
-          // Use different voices for different speakers
-          body: JSON.stringify({ 
-            text, 
+          body: JSON.stringify({
+            text,
             voiceId: speaker === "Moderator" ? "JBFqnCBsd6RMkjVDRZzb" :
                      speaker === "Priya" ? "EXAVITQu4vr4xnSDxMaL" :
                      speaker === "Rahul" ? "TX3LPaxmHKxFdv7VOQHJ" :
@@ -118,12 +145,68 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
     }
   }, []);
 
+  // Init microphone
+  const initMicrophone = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      return stream;
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "Microphone Access Denied",
+        description: "Please allow microphone access.",
+      });
+      return null;
+    }
+  }, [toast]);
+
+  // Start recording
+  const startRecording = useCallback(() => {
+    if (!streamRef.current) return;
+
+    audioChunksRef.current = [];
+    const mediaRecorder = new MediaRecorder(streamRef.current, {
+      mimeType: MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : "audio/webm",
+    });
+
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0) audioChunksRef.current.push(event.data);
+    };
+
+    mediaRecorder.onstop = async () => {
+      const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+      if (audioBlob.size > 1000) {
+        const text = await transcribeAudio(audioBlob);
+        if (text) {
+          setCurrentTranscript(text);
+          getGDResponse(text);
+          setCurrentTranscript("");
+        }
+      }
+    };
+
+    mediaRecorder.start(250);
+    mediaRecorderRef.current = mediaRecorder;
+    setIsRecording(true);
+  }, [transcribeAudio]);
+
+  // Stop recording
+  const stopRecording = useCallback(() => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+    }
+    setIsRecording(false);
+  }, []);
+
   // Get GD response from AI
   const getGDResponse = useCallback(async (userMessage: string) => {
     setIsProcessing(true);
 
     const newMessages: Message[] = [
-      ...messages, 
+      ...messages,
       { role: "user", content: userMessage, speaker: "You" }
     ];
     setMessages(newMessages);
@@ -142,27 +225,24 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
       if (error) throw error;
 
       const responses = data.responses as Array<{ speaker: string; content: string }>;
-      
-      // Add AI participant responses
+
       const updatedMessages = [...newMessages];
       for (const resp of responses) {
-        updatedMessages.push({ 
-          role: "participant", 
-          content: resp.content, 
-          speaker: resp.speaker 
+        updatedMessages.push({
+          role: "participant",
+          content: resp.content,
+          speaker: resp.speaker
         });
       }
-      
+
       setMessages(updatedMessages);
       setIsProcessing(false);
       setTurnCount(prev => prev + 1);
 
-      // Speak the responses
       for (const resp of responses) {
         await speak(resp.content, resp.speaker);
       }
 
-      // Check if GD should end (after ~8-10 turns)
       if (turnCount >= 7 || data.shouldEnd) {
         endGD();
       }
@@ -179,6 +259,9 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
 
   // Start GD
   const startGD = useCallback(async () => {
+    const stream = await initMicrophone();
+    if (!stream) return;
+
     setIsStarted(true);
     setStartTime(Date.now());
     setCameraActive(true);
@@ -197,14 +280,13 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
       if (error) throw error;
 
       const responses = data.responses as Array<{ speaker: string; content: string }>;
-      
-      setMessages(responses.map(r => ({ 
-        role: "participant" as const, 
-        content: r.content, 
-        speaker: r.speaker 
+
+      setMessages(responses.map(r => ({
+        role: "participant" as const,
+        content: r.content,
+        speaker: r.speaker
       })));
 
-      // Speak moderator intro
       for (const resp of responses) {
         await speak(resp.content, resp.speaker);
       }
@@ -217,12 +299,13 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
       });
       setIsStarted(false);
     }
-  }, [topic, speak, toast]);
+  }, [topic, speak, toast, initMicrophone]);
 
-  // End GD and generate evaluation
+  // End GD
   const endGD = useCallback(async () => {
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
+    stopRecording();
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop());
     }
     setCameraActive(false);
 
@@ -230,7 +313,6 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
     const speechMetrics = analyzeSpeech(userTranscripts, durationSeconds);
     const confidenceIndicators = calculateConfidenceIndicators(speechMetrics, durationSeconds);
 
-    // Calculate scores based on participation and speech quality
     const participationScore = Math.min(10, Math.round(userTranscripts.length * 1.5));
     const grammarScore = Math.max(4, 10 - speechMetrics.grammarIssues.length);
     const communicationScore = Math.min(10, Math.round(
@@ -244,7 +326,7 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
       leadership: Math.min(10, participationScore + (userTranscripts.length > 3 ? 2 : 0)),
       confidence: confidenceIndicators.confidenceLevel === "High" ? 9 :
                   confidenceIndicators.confidenceLevel === "Medium" ? 7 : 5,
-      overallGDScore: Math.round((communicationScore + grammarScore + participationScore + 
+      overallGDScore: Math.round((communicationScore + grammarScore + participationScore +
                       (confidenceIndicators.confidenceLevel === "High" ? 9 : 7)) / 4),
       whatWentWell: [
         userTranscripts.length >= 3 ? "Good participation - spoke multiple times" : "Participated in discussion",
@@ -265,55 +347,9 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
     };
 
     onEndDiscussion(evaluation);
-  }, [startTime, userTranscripts, onEndDiscussion]);
+  }, [startTime, userTranscripts, onEndDiscussion, stopRecording]);
 
-  // Handle speech recognition
-  useEffect(() => {
-    if (!isStarted) return;
-
-    const recognition = initSpeechRecognition();
-    if (!recognition) return;
-
-    recognitionRef.current = recognition;
-
-    recognition.onresult = (event: any) => {
-      let interimTranscript = "";
-      let finalTranscript = "";
-
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcript = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          finalTranscript += transcript;
-        } else {
-          interimTranscript += transcript;
-        }
-      }
-
-      setCurrentTranscript(interimTranscript || finalTranscript);
-
-      if (finalTranscript && !isSpeaking && !isProcessing) {
-        setCurrentTranscript("");
-        getGDResponse(finalTranscript);
-      }
-    };
-
-    recognition.onerror = (event: any) => {
-      console.error("Speech recognition error:", event.error);
-      if (event.error !== "aborted") {
-        setIsListening(false);
-      }
-    };
-
-    recognition.onend = () => {
-      if (isListening && isStarted && !isSpeaking) {
-        recognition.start();
-      }
-    };
-
-    return () => recognition.stop();
-  }, [isStarted, isListening, isSpeaking, isProcessing, getGDResponse, initSpeechRecognition]);
-
-  // Audio ended handler
+  // Audio ended handler - auto-start recording after AI finishes
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
@@ -321,37 +357,33 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
     const handleEnded = () => {
       setIsSpeaking(false);
       setCurrentSpeaker(null);
-      
-      if (isStarted && recognitionRef.current) {
-        setIsListening(true);
-        try {
-          recognitionRef.current.start();
-        } catch (e) {
-          // Already started
-        }
+
+      if (isStarted) {
+        startRecording();
       }
     };
 
     audio.addEventListener("ended", handleEnded);
     return () => audio.removeEventListener("ended", handleEnded);
-  }, [isStarted]);
+  }, [isStarted, startRecording]);
 
-  // Toggle listening
-  const toggleListening = useCallback(() => {
-    if (!recognitionRef.current) return;
-
-    if (isListening) {
-      recognitionRef.current.stop();
-      setIsListening(false);
+  // Toggle recording
+  const toggleRecording = useCallback(() => {
+    if (isRecording) {
+      stopRecording();
     } else {
-      try {
-        recognitionRef.current.start();
-        setIsListening(true);
-      } catch (e) {
-        console.error("Failed to start recognition:", e);
-      }
+      startRecording();
     }
-  }, [isListening]);
+  }, [isRecording, startRecording, stopRecording]);
+
+  // Cleanup
+  useEffect(() => {
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop());
+      }
+    };
+  }, []);
 
   if (!isStarted) {
     return (
@@ -361,7 +393,7 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
             <div className="w-16 h-16 mx-auto rounded-full bg-primary/10 flex items-center justify-center">
               <Users className="h-8 w-8 text-primary" />
             </div>
-            
+
             <div className="space-y-2">
               <h2 className="text-2xl font-bold text-foreground">Group Discussion</h2>
               <p className="text-muted-foreground">Topic:</p>
@@ -376,6 +408,10 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
                   <Badge key={p.name} variant="secondary">{p.name}</Badge>
                 ))}
               </div>
+            </div>
+
+            <div className="bg-secondary/50 rounded-lg p-3">
+              <p className="text-xs text-muted-foreground">🎙️ Powered by Whisper Large V3 for accurate transcription</p>
             </div>
 
             <div className="flex gap-3">
@@ -396,7 +432,7 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <audio ref={audioRef} className="hidden" />
-      
+
       {/* Header */}
       <div className="p-4 border-b border-border bg-card">
         <div className="max-w-4xl mx-auto flex items-center justify-between">
@@ -426,8 +462,8 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
                 <div
                   className={cn(
                     "max-w-[80%] rounded-lg p-3",
-                    msg.role === "user" 
-                      ? "bg-primary text-primary-foreground" 
+                    msg.role === "user"
+                      ? "bg-primary text-primary-foreground"
                       : "bg-secondary text-foreground"
                   )}
                 >
@@ -440,6 +476,14 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
             ))}
             <div ref={messagesEndRef} />
           </div>
+
+          {/* Transcribing indicator */}
+          {isTranscribing && (
+            <div className="flex items-center justify-center gap-2 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20 mb-4">
+              <Loader2 className="h-4 w-4 animate-spin text-yellow-500" />
+              <span className="text-sm text-foreground">Transcribing with Whisper...</span>
+            </div>
+          )}
 
           {/* Current transcript */}
           {currentTranscript && (
@@ -454,24 +498,29 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
               <div
                 className={cn(
                   "h-3 w-3 rounded-full",
-                  isListening ? "bg-green-500 animate-pulse" : "bg-muted"
+                  isRecording ? "bg-red-500 animate-pulse" :
+                  isTranscribing ? "bg-yellow-500 animate-pulse" : "bg-muted"
                 )}
               />
               <span className="text-sm text-muted-foreground">
-                {isProcessing ? "Processing..." :
+                {isTranscribing ? "Transcribing..." :
+                 isProcessing ? "Processing..." :
                  isSpeaking ? `${currentSpeaker} is speaking` :
-                 isListening ? "Your turn - speak now" : "Mic off"}
+                 isRecording ? "Recording... (click to send)" : "Mic off"}
               </span>
             </div>
 
             <Button
-              onClick={toggleListening}
-              disabled={isSpeaking || isProcessing}
+              onClick={toggleRecording}
+              disabled={isSpeaking || isProcessing || isTranscribing}
               size="lg"
-              variant={isListening ? "default" : "secondary"}
-              className="rounded-full w-14 h-14"
+              variant={isRecording ? "default" : "secondary"}
+              className={cn(
+                "rounded-full w-14 h-14",
+                isRecording && "bg-red-600 hover:bg-red-700"
+              )}
             >
-              {isListening ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
+              {isRecording ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
             </Button>
           </div>
         </div>

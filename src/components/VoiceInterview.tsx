@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
-import { Mic, MicOff, Phone, PhoneOff, Volume2, Video, VideoOff } from "lucide-react";
+import { Mic, MicOff, Phone, PhoneOff, Volume2, Video, VideoOff, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
@@ -26,9 +26,10 @@ export function VoiceInterview({
   jobDescription,
   onEndInterview,
 }: VoiceInterviewProps) {
-  const [isListening, setIsListening] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [currentTranscript, setCurrentTranscript] = useState("");
   const [lastSpokenText, setLastSpokenText] = useState("");
@@ -39,36 +40,65 @@ export function VoiceInterview({
   const [startTime, setStartTime] = useState<number>(0);
   const [frameAnalysis, setFrameAnalysis] = useState<string[]>([]);
 
-  const recognitionRef = useRef<any>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const animFrameRef = useRef<number | null>(null);
 
   const { toast } = useToast();
 
   // Handle webcam frame capture for non-verbal analysis
   const handleFrameCapture = useCallback((frameData: string) => {
-    // Store frame data for analysis (we'll send summary with evaluation)
-    setFrameAnalysis(prev => [...prev.slice(-10), frameData]); // Keep last 10 frames
+    setFrameAnalysis(prev => [...prev.slice(-10), frameData]);
   }, []);
 
-  // Initialize speech recognition
-  const initSpeechRecognition = useCallback(() => {
-    const win = window as any;
-    if (!("webkitSpeechRecognition" in window) && !("SpeechRecognition" in window)) {
+  // Transcribe audio via Whisper (HuggingFace large-v3)
+  const transcribeAudio = useCallback(async (audioBlob: Blob): Promise<string> => {
+    setIsTranscribing(true);
+    try {
+      const formData = new FormData();
+      formData.append("audio", audioBlob, "recording.webm");
+
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whisper-transcribe`,
+        {
+          method: "POST",
+          headers: {
+            apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          },
+          body: formData,
+        }
+      );
+
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || "Transcription failed");
+      }
+
+      const data = await response.json();
+      if (data.loading) {
+        toast({
+          title: "Model Loading",
+          description: "Whisper model is warming up. Please try speaking again in a moment.",
+        });
+        return "";
+      }
+      return data.text || "";
+    } catch (error) {
+      console.error("Transcription error:", error);
       toast({
         variant: "destructive",
-        title: "Speech Recognition Not Supported",
-        description: "Please use Chrome or Edge browser for voice interviews.",
+        title: "Transcription Error",
+        description: "Failed to transcribe audio. Please try again.",
       });
-      return null;
+      return "";
+    } finally {
+      setIsTranscribing(false);
     }
-
-    const SpeechRecognitionClass = win.SpeechRecognition || win.webkitSpeechRecognition;
-    const recognition = new SpeechRecognitionClass();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = "en-US";
-
-    return recognition;
   }, [toast]);
 
   // Text to speech using ElevenLabs
@@ -90,9 +120,7 @@ export function VoiceInterview({
         }
       );
 
-      if (!response.ok) {
-        throw new Error("TTS request failed");
-      }
+      if (!response.ok) throw new Error("TTS request failed");
 
       const audioBlob = await response.blob();
       const audioUrl = URL.createObjectURL(audioBlob);
@@ -118,13 +146,12 @@ export function VoiceInterview({
     const speechMetrics = analyzeSpeech(userTranscripts, durationSeconds);
     const confidenceIndicators = calculateConfidenceIndicators(speechMetrics, durationSeconds);
 
-    // Calculate scores
     const grammarScore = Math.max(4, 10 - speechMetrics.grammarIssues.length);
-    const speechScore = Math.min(10, 
+    const speechScore = Math.min(10,
       (speechMetrics.averageWordsPerMinute >= 120 && speechMetrics.averageWordsPerMinute <= 160 ? 8 : 6) +
       (speechMetrics.fillerCount < 5 ? 2 : 0)
     );
-    const nonVerbalScore = cameraEnabled ? 7 : 6; // Placeholder - in real app would analyze frames
+    const nonVerbalScore = cameraEnabled ? 7 : 6;
 
     return {
       type: "interview",
@@ -133,8 +160,8 @@ export function VoiceInterview({
       confidenceLevel: confidenceIndicators.confidenceLevel,
       fearIndicator: confidenceIndicators.fearIndicator,
       nonVerbalScore,
-      overallScore: Math.round((grammarScore + speechScore + nonVerbalScore + 
-        (confidenceIndicators.confidenceLevel === "High" ? 9 : 
+      overallScore: Math.round((grammarScore + speechScore + nonVerbalScore +
+        (confidenceIndicators.confidenceLevel === "High" ? 9 :
          confidenceIndicators.confidenceLevel === "Medium" ? 7 : 5)) / 4),
       strengths: [
         userTranscripts.length >= 5 ? "Engaged actively throughout the interview" : "Participated in the interview",
@@ -177,7 +204,6 @@ export function VoiceInterview({
       setMessages([...newMessages, { role: "assistant", content: reply }]);
       setIsProcessing(false);
 
-      // Check if interview should end
       if (userMessage.toLowerCase().includes("end interview")) {
         await speak(reply);
         const evaluation = generateEvaluation();
@@ -196,12 +222,83 @@ export function VoiceInterview({
     }
   }, [messages, resumeText, experienceLevel, jobDescription, speak, toast, onEndInterview, generateEvaluation]);
 
+  // Initialize microphone and MediaRecorder
+  const initMicrophone = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+
+      // Set up audio analyser for visual level
+      const audioContext = new AudioContext();
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      analyserRef.current = analyser;
+
+      return stream;
+    } catch (error) {
+      console.error("Microphone error:", error);
+      toast({
+        variant: "destructive",
+        title: "Microphone Access Denied",
+        description: "Please allow microphone access for the interview.",
+      });
+      return null;
+    }
+  }, [toast]);
+
+  // Start recording audio
+  const startRecording = useCallback(() => {
+    if (!streamRef.current) return;
+
+    audioChunksRef.current = [];
+    const mediaRecorder = new MediaRecorder(streamRef.current, {
+      mimeType: MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : "audio/webm",
+    });
+
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        audioChunksRef.current.push(event.data);
+      }
+    };
+
+    mediaRecorder.onstop = async () => {
+      const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+      if (audioBlob.size > 1000) {
+        // Only transcribe if there's meaningful audio
+        const text = await transcribeAudio(audioBlob);
+        if (text) {
+          setCurrentTranscript(text);
+          getAIResponse(text);
+          setCurrentTranscript("");
+        }
+      }
+    };
+
+    mediaRecorder.start(250); // collect data every 250ms
+    mediaRecorderRef.current = mediaRecorder;
+    setIsRecording(true);
+  }, [transcribeAudio, getAIResponse]);
+
+  // Stop recording audio
+  const stopRecording = useCallback(() => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+    }
+    setIsRecording(false);
+  }, []);
+
   // Start the interview
   const startInterview = useCallback(async () => {
+    const stream = await initMicrophone();
+    if (!stream) return;
+
     setIsConnected(true);
     setStartTime(Date.now());
 
-    // Get initial greeting
     try {
       const { data, error } = await supabase.functions.invoke("interview-chat", {
         body: {
@@ -226,124 +323,81 @@ export function VoiceInterview({
       });
       setIsConnected(false);
     }
-  }, [resumeText, experienceLevel, jobDescription, speak, toast]);
+  }, [resumeText, experienceLevel, jobDescription, speak, toast, initMicrophone]);
 
-  // Handle speech recognition
-  useEffect(() => {
-    if (!isConnected) return;
-
-    const recognition = initSpeechRecognition();
-    if (!recognition) return;
-
-    recognitionRef.current = recognition;
-
-    recognition.onresult = (event: any) => {
-      let interimTranscript = "";
-      let finalTranscript = "";
-
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcript = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          finalTranscript += transcript;
-        } else {
-          interimTranscript += transcript;
-        }
-      }
-
-      setCurrentTranscript(interimTranscript || finalTranscript);
-
-      if (finalTranscript && !isSpeaking && !isProcessing) {
-        setCurrentTranscript("");
-        getAIResponse(finalTranscript);
-      }
-    };
-
-    recognition.onerror = (event: any) => {
-      console.error("Speech recognition error:", event.error);
-      if (event.error !== "aborted") {
-        setIsListening(false);
-      }
-    };
-
-    recognition.onend = () => {
-      if (isListening && isConnected && !isSpeaking) {
-        recognition.start();
-      }
-    };
-
-    return () => {
-      recognition.stop();
-    };
-  }, [isConnected, isListening, isSpeaking, isProcessing, getAIResponse, initSpeechRecognition]);
-
-  // Audio element event handlers
+  // Audio element event handlers - start recording after AI finishes speaking
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
 
     const handleEnded = () => {
       setIsSpeaking(false);
-      // Resume listening after AI finishes speaking
-      if (isConnected && recognitionRef.current) {
-        setIsListening(true);
-        try {
-          recognitionRef.current.start();
-        } catch (e) {
-          // Already started
-        }
+      if (isConnected) {
+        startRecording();
       }
     };
 
     audio.addEventListener("ended", handleEnded);
     return () => audio.removeEventListener("ended", handleEnded);
-  }, [isConnected]);
+  }, [isConnected, startRecording]);
 
-  // Toggle listening
-  const toggleListening = useCallback(() => {
-    if (!recognitionRef.current) return;
-
-    if (isListening) {
-      recognitionRef.current.stop();
-      setIsListening(false);
-    } else {
-      try {
-        recognitionRef.current.start();
-        setIsListening(true);
-      } catch (e) {
-        console.error("Failed to start recognition:", e);
-      }
+  // Audio level visualization
+  useEffect(() => {
+    if (!isRecording || !analyserRef.current) {
+      setAudioLevel(0);
+      return;
     }
-  }, [isListening]);
+
+    const analyser = analyserRef.current;
+    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+    const updateLevel = () => {
+      analyser.getByteFrequencyData(dataArray);
+      const avg = dataArray.reduce((sum, val) => sum + val, 0) / dataArray.length;
+      setAudioLevel(avg);
+      animFrameRef.current = requestAnimationFrame(updateLevel);
+    };
+    updateLevel();
+
+    return () => {
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    };
+  }, [isRecording]);
+
+  // Toggle recording
+  const toggleRecording = useCallback(() => {
+    if (isRecording) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
+  }, [isRecording, startRecording, stopRecording]);
 
   // End call with evaluation
   const endCall = useCallback(() => {
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
+    stopRecording();
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop());
     }
     if (audioRef.current) {
       audioRef.current.pause();
     }
     setIsConnected(false);
-    setIsListening(false);
+    setIsRecording(false);
     setIsSpeaking(false);
-    
+
     const evaluation = generateEvaluation();
     onEndInterview(evaluation);
-  }, [onEndInterview, generateEvaluation]);
+  }, [onEndInterview, generateEvaluation, stopRecording]);
 
-  // Animate audio visualization
+  // Cleanup on unmount
   useEffect(() => {
-    if (!isListening) {
-      setAudioLevel(0);
-      return;
-    }
-
-    const interval = setInterval(() => {
-      setAudioLevel(Math.random() * 100);
-    }, 100);
-
-    return () => clearInterval(interval);
-  }, [isListening]);
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop());
+      }
+    };
+  }, []);
 
   return (
     <div className="min-h-screen bg-background flex flex-col lg:flex-row">
@@ -378,9 +432,9 @@ export function VoiceInterview({
                 Click the button below to start your voice interview with comprehensive evaluation.
               </p>
               <div className="flex flex-wrap justify-center gap-2 text-xs text-muted-foreground">
+                <span className="px-2 py-1 bg-secondary rounded-full">🎙️ Whisper STT</span>
                 <span className="px-2 py-1 bg-secondary rounded-full">Grammar Analysis</span>
                 <span className="px-2 py-1 bg-secondary rounded-full">Confidence Detection</span>
-                <span className="px-2 py-1 bg-secondary rounded-full">Speech Clarity</span>
                 <span className="px-2 py-1 bg-secondary rounded-full">Non-verbal Cues</span>
               </div>
             </div>
@@ -390,19 +444,30 @@ export function VoiceInterview({
                 <div
                   className={cn(
                     "h-3 w-3 rounded-full",
-                    isListening ? "bg-green-500 animate-pulse" : "bg-muted"
+                    isRecording ? "bg-green-500 animate-pulse" :
+                    isTranscribing ? "bg-yellow-500 animate-pulse" : "bg-muted"
                   )}
                 />
                 <span className="text-sm text-muted-foreground">
-                  {isProcessing
+                  {isTranscribing
+                    ? "Transcribing with Whisper..."
+                    : isProcessing
                     ? "Processing..."
                     : isSpeaking
                     ? "Interviewer is speaking"
-                    : isListening
-                    ? "Listening..."
+                    : isRecording
+                    ? "Recording... (click mic to send)"
                     : "Microphone off"}
                 </span>
               </div>
+
+              {/* Transcribing indicator */}
+              {isTranscribing && (
+                <div className="flex items-center justify-center gap-2 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20">
+                  <Loader2 className="h-4 w-4 animate-spin text-yellow-500" />
+                  <span className="text-sm text-foreground">Converting speech to text...</span>
+                </div>
+              )}
 
               {/* Current transcript */}
               {currentTranscript && (
@@ -412,7 +477,7 @@ export function VoiceInterview({
               )}
 
               {/* Last spoken text by AI */}
-              {lastSpokenText && !currentTranscript && (
+              {lastSpokenText && !currentTranscript && !isTranscribing && (
                 <div className="p-4 rounded-lg bg-card border border-border max-h-32 overflow-y-auto">
                   <p className="text-sm text-foreground">{lastSpokenText}</p>
                 </div>
@@ -422,14 +487,14 @@ export function VoiceInterview({
         </div>
 
         {/* Audio Level Visualization */}
-        {isListening && (
+        {isRecording && (
           <div className="flex items-end justify-center gap-1 h-12 mb-6">
             {[...Array(5)].map((_, i) => (
               <div
                 key={i}
                 className="w-2 bg-primary rounded-full transition-all duration-100"
                 style={{
-                  height: `${Math.min(12 + Math.random() * audioLevel * 0.4, 48)}px`,
+                  height: `${Math.min(12 + (audioLevel / 255) * 36, 48)}px`,
                 }}
               />
             ))}
@@ -450,16 +515,16 @@ export function VoiceInterview({
           ) : (
             <>
               <Button
-                onClick={toggleListening}
-                disabled={isSpeaking || isProcessing}
+                onClick={toggleRecording}
+                disabled={isSpeaking || isProcessing || isTranscribing}
                 size="lg"
-                variant={isListening ? "default" : "secondary"}
+                variant={isRecording ? "default" : "secondary"}
                 className={cn(
                   "w-16 h-16 rounded-full",
-                  isListening && "bg-primary hover:bg-primary/90"
+                  isRecording && "bg-red-600 hover:bg-red-700"
                 )}
               >
-                {isListening ? (
+                {isRecording ? (
                   <Mic className="h-6 w-6" />
                 ) : (
                   <MicOff className="h-6 w-6" />
@@ -494,7 +559,7 @@ export function VoiceInterview({
         {/* Instructions */}
         <p className="text-center text-xs text-muted-foreground mt-8 max-w-md">
           {isConnected
-            ? 'Speak clearly when the microphone is active. Say "end interview" to finish and receive your evaluation report.'
+            ? 'Speak while recording, then click the mic button to stop and send. Say "end interview" to finish and receive your evaluation.'
             : "Make sure your microphone and camera are enabled for comprehensive evaluation."}
         </p>
       </div>
@@ -512,8 +577,8 @@ export function VoiceInterview({
               {cameraEnabled ? <Video className="h-4 w-4" /> : <VideoOff className="h-4 w-4" />}
             </Button>
           </div>
-          
-          <WebcamFeed 
+
+          <WebcamFeed
             isActive={isConnected && cameraEnabled}
             onFrameCapture={handleFrameCapture}
             captureInterval={5000}
@@ -524,7 +589,6 @@ export function VoiceInterview({
             Camera is used for analyzing non-verbal communication like eye contact and facial expressions.
           </p>
 
-          {/* Real-time feedback indicators */}
           {isConnected && (
             <div className="space-y-2 pt-4 border-t border-border">
               <h4 className="text-xs font-medium text-muted-foreground uppercase">Live Analysis</h4>
