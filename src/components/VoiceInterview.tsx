@@ -40,13 +40,12 @@ export function VoiceInterview({
   const [startTime, setStartTime] = useState<number>(0);
   const [frameAnalysis, setFrameAnalysis] = useState<string[]>([]);
 
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const animFrameRef = useRef<number | null>(null);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const finalTranscriptRef = useRef<string>("");
 
   const { toast } = useToast();
 
@@ -55,51 +54,59 @@ export function VoiceInterview({
     setFrameAnalysis(prev => [...prev.slice(-10), frameData]);
   }, []);
 
-  // Transcribe audio via Whisper (HuggingFace large-v3)
-  const transcribeAudio = useCallback(async (audioBlob: Blob): Promise<string> => {
-    setIsTranscribing(true);
-    try {
-      const formData = new FormData();
-      formData.append("audio", audioBlob, "recording.webm");
-
-      const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whisper-transcribe`,
-        {
-          method: "POST",
-          headers: {
-            apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-          },
-          body: formData,
-        }
-      );
-
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || "Transcription failed");
-      }
-
-      const data = await response.json();
-      if (data.loading) {
-        toast({
-          title: "Model Loading",
-          description: "Whisper model is warming up. Please try speaking again in a moment.",
-        });
-        return "";
-      }
-      return data.text || "";
-    } catch (error) {
-      console.error("Transcription error:", error);
+  // Initialize SpeechRecognition for real-time transcription
+  const initRecognition = useCallback(() => {
+    const SpeechRecognitionAPI = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognitionAPI) {
       toast({
         variant: "destructive",
-        title: "Transcription Error",
-        description: "Failed to transcribe audio. Please try again.",
+        title: "Not Supported",
+        description: "Speech recognition is not supported in this browser. Please use Chrome.",
       });
-      return "";
-    } finally {
-      setIsTranscribing(false);
+      return null;
     }
-  }, [toast]);
+    const recognition = new SpeechRecognitionAPI();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      let interim = "";
+      let final = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          final += transcript;
+        } else {
+          interim += transcript;
+        }
+      }
+      if (final) {
+        finalTranscriptRef.current += final;
+      }
+      setCurrentTranscript(finalTranscriptRef.current + interim);
+    };
+
+    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+      console.error("Speech recognition error:", event.error);
+      if (event.error !== "no-speech" && event.error !== "aborted") {
+        toast({
+          variant: "destructive",
+          title: "Recognition Error",
+          description: `Speech recognition error: ${event.error}`,
+        });
+      }
+    };
+
+    recognition.onend = () => {
+      // Auto-restart if still recording
+      if (recognitionRef.current && isRecording) {
+        try { recognitionRef.current.start(); } catch {}
+      }
+    };
+
+    return recognition;
+  }, [toast, isRecording]);
 
   // Text to speech using ElevenLabs
   const speak = useCallback(async (text: string) => {
@@ -248,48 +255,37 @@ export function VoiceInterview({
     }
   }, [toast]);
 
-  // Start recording audio
+  // Start recording with SpeechRecognition
   const startRecording = useCallback(() => {
     if (!streamRef.current) return;
-
-    audioChunksRef.current = [];
-    const mediaRecorder = new MediaRecorder(streamRef.current, {
-      mimeType: MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-        ? "audio/webm;codecs=opus"
-        : "audio/webm",
-    });
-
-    mediaRecorder.ondataavailable = (event) => {
-      if (event.data.size > 0) {
-        audioChunksRef.current.push(event.data);
-      }
-    };
-
-    mediaRecorder.onstop = async () => {
-      const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
-      if (audioBlob.size > 1000) {
-        // Only transcribe if there's meaningful audio
-        const text = await transcribeAudio(audioBlob);
-        if (text) {
-          setCurrentTranscript(text);
-          getAIResponse(text);
-          setCurrentTranscript("");
-        }
-      }
-    };
-
-    mediaRecorder.start(250); // collect data every 250ms
-    mediaRecorderRef.current = mediaRecorder;
+    
+    finalTranscriptRef.current = "";
+    setCurrentTranscript("");
+    
+    const recognition = initRecognition();
+    if (!recognition) return;
+    
+    recognitionRef.current = recognition;
+    recognition.start();
     setIsRecording(true);
-  }, [transcribeAudio, getAIResponse]);
+  }, [initRecognition]);
 
-  // Stop recording audio
+  // Stop recording and process transcript
   const stopRecording = useCallback(() => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-      mediaRecorderRef.current.stop();
+    if (recognitionRef.current) {
+      recognitionRef.current.onend = null; // prevent auto-restart
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
     }
     setIsRecording(false);
-  }, []);
+    
+    const text = finalTranscriptRef.current.trim();
+    if (text) {
+      setCurrentTranscript(text);
+      getAIResponse(text);
+      setCurrentTranscript("");
+    }
+  }, [getAIResponse]);
 
   // Start the interview
   const startInterview = useCallback(async () => {
@@ -432,7 +428,7 @@ export function VoiceInterview({
                 Click the button below to start your voice interview with comprehensive evaluation.
               </p>
               <div className="flex flex-wrap justify-center gap-2 text-xs text-muted-foreground">
-                <span className="px-2 py-1 bg-secondary rounded-full">🎙️ Whisper STT</span>
+                <span className="px-2 py-1 bg-secondary rounded-full">🎙️ Voice Recognition</span>
                 <span className="px-2 py-1 bg-secondary rounded-full">Grammar Analysis</span>
                 <span className="px-2 py-1 bg-secondary rounded-full">Confidence Detection</span>
                 <span className="px-2 py-1 bg-secondary rounded-full">Non-verbal Cues</span>
@@ -450,7 +446,7 @@ export function VoiceInterview({
                 />
                 <span className="text-sm text-muted-foreground">
                   {isTranscribing
-                    ? "Transcribing with Whisper..."
+                    ? "Transcribing..."
                     : isProcessing
                     ? "Processing..."
                     : isSpeaking

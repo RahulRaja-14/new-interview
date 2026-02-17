@@ -23,10 +23,15 @@ serve(async (req) => {
       throw new Error("No audio file provided");
     }
 
-    const audioBytes = await audioFile.arrayBuffer();
-    const base64Audio = btoa(
-      String.fromCharCode(...new Uint8Array(audioBytes))
-    );
+    const audioBytes = new Uint8Array(await audioFile.arrayBuffer());
+    // Chunk the conversion to avoid stack overflow for large files
+    let binary = "";
+    const chunkSize = 8192;
+    for (let i = 0; i < audioBytes.length; i += chunkSize) {
+      const chunk = audioBytes.subarray(i, i + chunkSize);
+      binary += String.fromCharCode(...chunk);
+    }
+    const base64Audio = btoa(binary);
 
     // Use Gemini Flash via Lovable AI gateway for audio transcription
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {

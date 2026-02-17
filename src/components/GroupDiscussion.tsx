@@ -42,9 +42,10 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
   const [turnCount, setTurnCount] = useState(0);
   const [cameraActive, setCameraActive] = useState(false);
 
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const finalTranscriptRef = useRef<string>("");
+  const getGDResponseRef = useRef<(text: string) => void>(() => {});
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -58,50 +59,44 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
     scrollToBottom();
   }, [messages]);
 
-  // Transcribe audio via Whisper
-  const transcribeAudio = useCallback(async (audioBlob: Blob): Promise<string> => {
-    setIsTranscribing(true);
-    try {
-      const formData = new FormData();
-      formData.append("audio", audioBlob, "recording.webm");
-
-      const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whisper-transcribe`,
-        {
-          method: "POST",
-          headers: {
-            apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-          },
-          body: formData,
-        }
-      );
-
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || "Transcription failed");
-      }
-
-      const data = await response.json();
-      if (data.loading) {
-        toast({
-          title: "Model Loading",
-          description: "Whisper model is warming up. Please try again in a moment.",
-        });
-        return "";
-      }
-      return data.text || "";
-    } catch (error) {
-      console.error("Transcription error:", error);
+  // Initialize SpeechRecognition for real-time transcription
+  const initRecognition = useCallback(() => {
+    const SpeechRecognitionAPI = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognitionAPI) {
       toast({
         variant: "destructive",
-        title: "Transcription Error",
-        description: "Failed to transcribe audio.",
+        title: "Not Supported",
+        description: "Speech recognition is not supported in this browser. Please use Chrome.",
       });
-      return "";
-    } finally {
-      setIsTranscribing(false);
+      return null;
     }
+    const recognition = new SpeechRecognitionAPI() as SpeechRecognition;
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      let interim = "";
+      let final = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          final += transcript;
+        } else {
+          interim += transcript;
+        }
+      }
+      if (final) {
+        finalTranscriptRef.current += final;
+      }
+      setCurrentTranscript(finalTranscriptRef.current + interim);
+    };
+
+    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+      console.error("Speech recognition error:", event.error);
+    };
+
+    return recognition;
   }, [toast]);
 
   // Text to speech using browser speechSynthesis
@@ -170,44 +165,46 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
     }
   }, [toast]);
 
-  // Start recording
+  // Start recording with SpeechRecognition
   const startRecording = useCallback(() => {
     if (!streamRef.current) return;
 
-    audioChunksRef.current = [];
-    const mediaRecorder = new MediaRecorder(streamRef.current, {
-      mimeType: MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-        ? "audio/webm;codecs=opus"
-        : "audio/webm",
-    });
+    finalTranscriptRef.current = "";
+    setCurrentTranscript("");
 
-    mediaRecorder.ondataavailable = (event) => {
-      if (event.data.size > 0) audioChunksRef.current.push(event.data);
-    };
+    const recognition = initRecognition();
+    if (!recognition) return;
 
-    mediaRecorder.onstop = async () => {
-      const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
-      if (audioBlob.size > 1000) {
-        const text = await transcribeAudio(audioBlob);
-        if (text) {
-          setCurrentTranscript(text);
-          getGDResponse(text);
-          setCurrentTranscript("");
-        }
-      }
-    };
-
-    mediaRecorder.start(250);
-    mediaRecorderRef.current = mediaRecorder;
+    recognitionRef.current = recognition;
+    recognition.start();
     setIsRecording(true);
-  }, [transcribeAudio]);
+  }, [initRecognition]);
 
   // Stop recording
   const stopRecording = useCallback(() => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-      mediaRecorderRef.current.stop();
+    if (recognitionRef.current) {
+      recognitionRef.current.onend = null;
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
     }
     setIsRecording(false);
+  }, []);
+
+  // Stop recording and process transcript via ref
+  const stopRecordingAndProcess = useCallback(() => {
+    if (recognitionRef.current) {
+      recognitionRef.current.onend = null;
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+    }
+    setIsRecording(false);
+
+    const text = finalTranscriptRef.current.trim();
+    if (text) {
+      setCurrentTranscript(text);
+      getGDResponseRef.current(text);
+      setCurrentTranscript("");
+    }
   }, []);
 
   // Get GD response from AI
@@ -268,7 +265,11 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
     }
   }, [messages, topic, turnCount, speak, toast]);
 
-  // Start GD
+  // Keep ref in sync
+  useEffect(() => {
+    getGDResponseRef.current = getGDResponse;
+  }, [getGDResponse]);
+
   const startGD = useCallback(async () => {
     const stream = await initMicrophone();
     if (!stream) return;
@@ -372,7 +373,7 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
   // Toggle recording
   const toggleRecording = useCallback(() => {
     if (isRecording) {
-      stopRecording();
+      stopRecordingAndProcess();
     } else {
       startRecording();
     }
@@ -413,7 +414,7 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
             </div>
 
             <div className="bg-secondary/50 rounded-lg p-3">
-              <p className="text-xs text-muted-foreground">🎙️ Powered by Whisper Large V3 for accurate transcription</p>
+              <p className="text-xs text-muted-foreground">🎙️ Powered by browser Speech Recognition for instant transcription</p>
             </div>
 
             <div className="flex gap-3">
@@ -483,7 +484,7 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
           {isTranscribing && (
             <div className="flex items-center justify-center gap-2 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20 mb-4">
               <Loader2 className="h-4 w-4 animate-spin text-yellow-500" />
-              <span className="text-sm text-foreground">Transcribing with Whisper...</span>
+              <span className="text-sm text-foreground">Transcribing...</span>
             </div>
           )}
 
