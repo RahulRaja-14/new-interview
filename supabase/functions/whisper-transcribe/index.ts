@@ -11,9 +11,9 @@ serve(async (req) => {
   }
 
   try {
-    const HF_ACCESS_TOKEN = Deno.env.get("HF_ACCESS_TOKEN");
-    if (!HF_ACCESS_TOKEN) {
-      throw new Error("HF_ACCESS_TOKEN not configured");
+    const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
+    if (!LOVABLE_API_KEY) {
+      throw new Error("LOVABLE_API_KEY not configured");
     }
 
     const formData = await req.formData();
@@ -24,43 +24,56 @@ serve(async (req) => {
     }
 
     const audioBytes = await audioFile.arrayBuffer();
-
-    // Call Hugging Face Whisper large-v3-turbo model via router
-    const response = await fetch(
-      "https://router.huggingface.co/hf-inference/models/openai/whisper-large-v3-turbo",
-      {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${HF_ACCESS_TOKEN}`,
-          "Content-Type": audioFile.type || "audio/webm",
-        },
-        body: new Uint8Array(audioBytes),
-      }
+    const base64Audio = btoa(
+      String.fromCharCode(...new Uint8Array(audioBytes))
     );
+
+    // Use Gemini Flash via Lovable AI gateway for audio transcription
+    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${LOVABLE_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "google/gemini-2.5-flash",
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: "Transcribe the following audio exactly as spoken. Return ONLY the transcribed text, nothing else. If the audio is silent or unclear, return an empty string."
+              },
+              {
+                type: "input_audio",
+                input_audio: {
+                  data: base64Audio,
+                  format: audioFile.type?.includes("wav") ? "wav" : "mp3"
+                }
+              }
+            ]
+          }
+        ],
+        max_tokens: 1000,
+      }),
+    });
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error("HF API error:", response.status, errorText);
-      
-      // Handle model loading
-      if (response.status === 503) {
-        return new Response(
-          JSON.stringify({ text: "", loading: true, error: "Model is loading, please try again in a moment." }),
-          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-      throw new Error(`Hugging Face API error (${response.status}): ${errorText}`);
+      console.error("AI Gateway error:", response.status, errorText);
+      throw new Error(`AI Gateway error (${response.status}): ${errorText}`);
     }
 
-    const result = await response.json();
-    const transcribedText = result.text || "";
+    const data = await response.json();
+    const transcribedText = data.choices?.[0]?.message?.content || "";
 
     return new Response(
       JSON.stringify({ text: transcribedText.trim() }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error: unknown) {
-    console.error("Whisper Transcription Error:", error);
+    console.error("Transcription Error:", error);
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     return new Response(
       JSON.stringify({ error: errorMessage }),
