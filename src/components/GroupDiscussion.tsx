@@ -45,7 +45,7 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const { toast } = useToast();
@@ -104,45 +104,54 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
     }
   }, [toast]);
 
-  // Text to speech
-  const speak = useCallback(async (text: string, speaker: string) => {
-    setIsSpeaking(true);
-    setCurrentSpeaker(speaker);
+  // Text to speech using browser speechSynthesis
+  const speak = useCallback((text: string, speaker: string): Promise<void> => {
+    return new Promise((resolve) => {
+      setIsSpeaking(true);
+      setCurrentSpeaker(speaker);
 
-    try {
-      const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/elevenlabs-tts`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-          },
-          body: JSON.stringify({
-            text,
-            voiceId: speaker === "Moderator" ? "JBFqnCBsd6RMkjVDRZzb" :
-                     speaker === "Priya" ? "EXAVITQu4vr4xnSDxMaL" :
-                     speaker === "Rahul" ? "TX3LPaxmHKxFdv7VOQHJ" :
-                     "XrExE9yKIg1WjnnlVkGX"
-          }),
-        }
-      );
-
-      if (!response.ok) throw new Error("TTS failed");
-
-      const audioBlob = await response.blob();
-      const audioUrl = URL.createObjectURL(audioBlob);
-
-      if (audioRef.current) {
-        audioRef.current.src = audioUrl;
-        await audioRef.current.play();
+      if (!window.speechSynthesis) {
+        console.warn("speechSynthesis not supported");
+        setIsSpeaking(false);
+        setCurrentSpeaker(null);
+        resolve();
+        return;
       }
-    } catch (error) {
-      console.error("TTS Error:", error);
-      setIsSpeaking(false);
-      setCurrentSpeaker(null);
-    }
+
+      // Cancel any ongoing speech
+      window.speechSynthesis.cancel();
+
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 1;
+      utterance.pitch = speaker === "Priya" ? 1.2 : speaker === "Rahul" ? 0.85 : speaker === "Ananya" ? 1.1 : 1;
+      utterance.volume = 1;
+
+      // Try to pick a voice
+      const voices = window.speechSynthesis.getVoices();
+      const femaleVoice = voices.find(v => v.name.includes("Female") || v.name.includes("Samantha") || v.name.includes("Google UK English Female"));
+      const maleVoice = voices.find(v => v.name.includes("Male") || v.name.includes("Daniel") || v.name.includes("Google UK English Male"));
+
+      if (speaker === "Rahul" && maleVoice) {
+        utterance.voice = maleVoice;
+      } else if ((speaker === "Priya" || speaker === "Ananya") && femaleVoice) {
+        utterance.voice = femaleVoice;
+      }
+
+      utterance.onend = () => {
+        setIsSpeaking(false);
+        setCurrentSpeaker(null);
+        resolve();
+      };
+
+      utterance.onerror = () => {
+        console.error("SpeechSynthesis error");
+        setIsSpeaking(false);
+        setCurrentSpeaker(null);
+        resolve();
+      };
+
+      window.speechSynthesis.speak(utterance);
+    });
   }, []);
 
   // Init microphone
@@ -239,13 +248,15 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
       setIsProcessing(false);
       setTurnCount(prev => prev + 1);
 
-      for (const resp of responses) {
-        await speak(resp.content, resp.speaker);
+      if (turnCount >= 7 || data.shouldEnd) {
+        for (const resp of responses) {
+          await speak(resp.content, resp.speaker);
+        }
+        endGD();
+      } else {
+        await speakAllAndRecord(responses);
       }
 
-      if (turnCount >= 7 || data.shouldEnd) {
-        endGD();
-      }
     } catch (error) {
       console.error("GD Error:", error);
       toast({
@@ -287,9 +298,7 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
         speaker: r.speaker
       })));
 
-      for (const resp of responses) {
-        await speak(resp.content, resp.speaker);
-      }
+      await speakAllAndRecord(responses);
     } catch (error) {
       console.error("Start GD Error:", error);
       toast({
@@ -349,23 +358,16 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
     onEndDiscussion(evaluation);
   }, [startTime, userTranscripts, onEndDiscussion, stopRecording]);
 
-  // Audio ended handler - auto-start recording after AI finishes
-  useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
-
-    const handleEnded = () => {
-      setIsSpeaking(false);
-      setCurrentSpeaker(null);
-
-      if (isStarted) {
-        startRecording();
-      }
-    };
-
-    audio.addEventListener("ended", handleEnded);
-    return () => audio.removeEventListener("ended", handleEnded);
-  }, [isStarted, startRecording]);
+  // Auto-start recording after all AI participants finish speaking
+  const speakAllAndRecord = useCallback(async (responses: Array<{ speaker: string; content: string }>) => {
+    for (const resp of responses) {
+      await speak(resp.content, resp.speaker);
+    }
+    // Auto-start recording after all bot responses
+    if (isStarted && streamRef.current) {
+      startRecording();
+    }
+  }, [speak, isStarted, startRecording]);
 
   // Toggle recording
   const toggleRecording = useCallback(() => {
@@ -431,7 +433,7 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
-      <audio ref={audioRef} className="hidden" />
+      
 
       {/* Header */}
       <div className="p-4 border-b border-border bg-card">

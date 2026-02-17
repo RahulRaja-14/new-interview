@@ -25,9 +25,9 @@ serve(async (req) => {
 
     const audioBytes = await audioFile.arrayBuffer();
 
-    // Call Hugging Face Whisper large-v3 model
+    // Call Hugging Face Whisper large-v3-turbo model via router
     const response = await fetch(
-      "https://api-inference.huggingface.co/models/openai/whisper-large-v3",
+      "https://router.huggingface.co/hf-inference/models/openai/whisper-large-v3-turbo",
       {
         method: "POST",
         headers: {
