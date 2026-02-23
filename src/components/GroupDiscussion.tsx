@@ -117,19 +117,39 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
       window.speechSynthesis.cancel();
 
       const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 1;
-      utterance.pitch = speaker === "Priya" ? 1.2 : speaker === "Rahul" ? 0.85 : speaker === "Ananya" ? 1.1 : 1;
       utterance.volume = 1;
 
-      // Try to pick a voice
+      // Distinct voice profiles per participant
       const voices = window.speechSynthesis.getVoices();
-      const femaleVoice = voices.find(v => v.name.includes("Female") || v.name.includes("Samantha") || v.name.includes("Google UK English Female"));
-      const maleVoice = voices.find(v => v.name.includes("Male") || v.name.includes("Daniel") || v.name.includes("Google UK English Male"));
+      const enVoices = voices.filter(v => v.lang.startsWith("en"));
 
-      if (speaker === "Rahul" && maleVoice) {
-        utterance.voice = maleVoice;
-      } else if ((speaker === "Priya" || speaker === "Ananya") && femaleVoice) {
-        utterance.voice = femaleVoice;
+      if (speaker === "Priya") {
+        utterance.rate = 1.05;
+        utterance.pitch = 1.3;
+        const voice = enVoices.find(v => v.name.includes("Samantha")) ||
+                       enVoices.find(v => v.name.includes("Google UK English Female")) ||
+                       enVoices.find(v => v.name.toLowerCase().includes("female"));
+        if (voice) utterance.voice = voice;
+      } else if (speaker === "Rahul") {
+        utterance.rate = 0.92;
+        utterance.pitch = 0.7;
+        const voice = enVoices.find(v => v.name.includes("Daniel")) ||
+                       enVoices.find(v => v.name.includes("Google UK English Male")) ||
+                       enVoices.find(v => v.name.toLowerCase().includes("male"));
+        if (voice) utterance.voice = voice;
+      } else if (speaker === "Ananya") {
+        utterance.rate = 1.0;
+        utterance.pitch = 1.1;
+        const voice = enVoices.find(v => v.name.includes("Karen") || v.name.includes("Moira")) ||
+                       enVoices.find(v => v.name.includes("Google US English")) ||
+                       enVoices.filter(v => v.name.toLowerCase().includes("female"))[1];
+        if (voice) utterance.voice = voice;
+      } else {
+        // Moderator
+        utterance.rate = 0.95;
+        utterance.pitch = 1.0;
+        const voice = enVoices.find(v => v.name.includes("Alex")) || enVoices[0];
+        if (voice) utterance.voice = voice;
       }
 
       utterance.onend = () => {
@@ -232,26 +252,17 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
 
       const responses = data.responses as Array<{ speaker: string; content: string }>;
 
-      const updatedMessages = [...newMessages];
-      for (const resp of responses) {
-        updatedMessages.push({
-          role: "participant",
-          content: resp.content,
-          speaker: resp.speaker
-        });
-      }
-
-      setMessages(updatedMessages);
       setIsProcessing(false);
       setTurnCount(prev => prev + 1);
 
       if (turnCount >= 7 || data.shouldEnd) {
-        for (const resp of responses) {
-          await speak(resp.content, resp.speaker);
-        }
+        await speakResponsesSequentially(newMessages, responses);
         endGD();
       } else {
-        await speakAllAndRecord(responses);
+        await speakResponsesSequentially(newMessages, responses);
+        if (isStarted && streamRef.current) {
+          startRecording();
+        }
       }
 
     } catch (error) {
@@ -293,13 +304,10 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
 
       const responses = data.responses as Array<{ speaker: string; content: string }>;
 
-      setMessages(responses.map(r => ({
-        role: "participant" as const,
-        content: r.content,
-        speaker: r.speaker
-      })));
-
-      await speakAllAndRecord(responses);
+      await speakResponsesSequentially([], responses);
+      if (streamRef.current) {
+        startRecording();
+      }
     } catch (error) {
       console.error("Start GD Error:", error);
       toast({
@@ -359,16 +367,19 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
     onEndDiscussion(evaluation);
   }, [startTime, userTranscripts, onEndDiscussion, stopRecording]);
 
-  // Auto-start recording after all AI participants finish speaking
-  const speakAllAndRecord = useCallback(async (responses: Array<{ speaker: string; content: string }>) => {
+  // Show each bot message one at a time, synced with voice
+  const speakResponsesSequentially = useCallback(async (
+    baseMessages: Message[],
+    responses: Array<{ speaker: string; content: string }>
+  ) => {
+    let current = [...baseMessages];
     for (const resp of responses) {
+      const newMsg: Message = { role: "participant", content: resp.content, speaker: resp.speaker };
+      current = [...current, newMsg];
+      setMessages([...current]);
       await speak(resp.content, resp.speaker);
     }
-    // Auto-start recording after all bot responses
-    if (isStarted && streamRef.current) {
-      startRecording();
-    }
-  }, [speak, isStarted, startRecording]);
+  }, [speak]);
 
   // Toggle recording
   const toggleRecording = useCallback(() => {
