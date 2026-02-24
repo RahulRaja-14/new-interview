@@ -91,7 +91,15 @@ Simply provide a brief closing greeting, thank the candidate for their time, and
       throw new Error(`AI API error: ${error}`);
     }
 
-    const data = await response.json();
+    interface ChatCompletionResponse {
+      choices: Array<{
+        message?: {
+          content?: string;
+        };
+      }>;
+    }
+
+    const data = await response.json() as ChatCompletionResponse;
     const reply = data.choices[0]?.message?.content || "I apologize, could you please repeat that?";
 
     return new Response(

@@ -12,7 +12,7 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { text, voiceId = "JBFqnCBsd6RMkjVDRZzb" } = await req.json();
+    const { text, voiceId = "JBFqnCBsd6RMkjVDRZzb" } = await req.json() as { text: string; voiceId?: string };
     const ELEVENLABS_API_KEY = Deno.env.get("ELEVENLABS_API_KEY");
 
     if (!ELEVENLABS_API_KEY) {

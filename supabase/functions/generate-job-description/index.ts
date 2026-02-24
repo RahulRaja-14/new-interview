@@ -53,7 +53,15 @@ Deno.serve(async (req) => {
       throw new Error(`AI API error: ${error}`);
     }
 
-    const data = await response.json();
+    interface ChatCompletionResponse {
+      choices: Array<{
+        message?: {
+          content?: string;
+        };
+      }>;
+    }
+
+    const data = await response.json() as ChatCompletionResponse;
     const jobDescription = data.choices[0]?.message?.content || "Unable to generate job description.";
 
     return new Response(
