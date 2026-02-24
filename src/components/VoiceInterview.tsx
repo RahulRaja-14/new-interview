@@ -147,45 +147,53 @@ export function VoiceInterview({
     }
   }, [toast]);
 
-  // Generate evaluation from collected data
-  const generateEvaluation = useCallback((): InterviewEvaluation => {
+  // Generate evaluation from AI
+  const generateEvaluation = useCallback(async (): Promise<InterviewEvaluation> => {
     const durationSeconds = (Date.now() - startTime) / 1000;
-    const speechMetrics = analyzeSpeech(userTranscripts, durationSeconds);
-    const confidenceIndicators = calculateConfidenceIndicators(speechMetrics, durationSeconds);
 
-    const grammarScore = Math.max(4, 10 - speechMetrics.grammarIssues.length);
-    const speechScore = Math.min(10,
-      (speechMetrics.averageWordsPerMinute >= 120 && speechMetrics.averageWordsPerMinute <= 160 ? 8 : 6) +
-      (speechMetrics.fillerCount < 5 ? 2 : 0)
-    );
-    const nonVerbalScore = cameraEnabled ? 7 : 6;
+    try {
+      const { data, error } = await supabase.functions.invoke("evaluate-session", {
+        body: {
+          type: "interview",
+          messages,
+          userTranscripts,
+          durationSeconds,
+          cameraEnabled,
+        },
+      });
 
-    return {
-      type: "interview",
-      grammarAccuracy: grammarScore,
-      speechClarity: speechScore,
-      confidenceLevel: confidenceIndicators.confidenceLevel,
-      fearIndicator: confidenceIndicators.fearIndicator,
-      nonVerbalScore,
-      overallScore: Math.round((grammarScore + speechScore + nonVerbalScore +
-        (confidenceIndicators.confidenceLevel === "High" ? 9 :
-         confidenceIndicators.confidenceLevel === "Medium" ? 7 : 5)) / 4),
-      strengths: [
-        userTranscripts.length >= 5 ? "Engaged actively throughout the interview" : "Participated in the interview",
-        speechMetrics.fillerCount < 5 ? "Clear communication with minimal filler words" : "Attempted to communicate clearly",
-        speechMetrics.sentenceCount > 10 ? "Provided detailed responses" : "Gave structured responses"
-      ],
-      nervousHabits: confidenceIndicators.nervousHabits,
-      grammarIssues: speechMetrics.grammarIssues,
-      improvementPlan: [
-        "Practice speaking about your projects for 5-10 minutes daily",
-        "Record yourself answering common interview questions and review",
-        "Work on reducing filler words by pausing instead of saying 'um'",
-        "Study STAR method for structuring behavioral answers",
-        "Do mock interviews with friends or mentors weekly"
-      ]
-    };
-  }, [startTime, userTranscripts, cameraEnabled]);
+      if (error) throw error;
+
+      return {
+        type: "interview",
+        grammarAccuracy: data.grammarAccuracy ?? 5,
+        speechClarity: data.speechClarity ?? 5,
+        confidenceLevel: data.confidenceLevel ?? "Medium",
+        fearIndicator: data.fearIndicator ?? "Moderate",
+        nonVerbalScore: data.nonVerbalScore ?? 5,
+        overallScore: data.overallScore ?? 5,
+        strengths: data.strengths ?? ["Participated in the interview"],
+        nervousHabits: data.nervousHabits ?? [],
+        grammarIssues: data.grammarIssues ?? [],
+        improvementPlan: data.improvementPlan ?? ["Practice more"],
+      };
+    } catch (err) {
+      console.error("Evaluation error:", err);
+      return {
+        type: "interview",
+        grammarAccuracy: 5,
+        speechClarity: 5,
+        confidenceLevel: "Medium",
+        fearIndicator: "Moderate",
+        nonVerbalScore: 5,
+        overallScore: 5,
+        strengths: ["Participated in the interview"],
+        nervousHabits: [],
+        grammarIssues: [],
+        improvementPlan: ["Practice speaking daily"],
+      };
+    }
+  }, [startTime, userTranscripts, messages, cameraEnabled]);
 
   // Get AI response
   const getAIResponse = useCallback(async (userMessage: string) => {
@@ -213,8 +221,8 @@ export function VoiceInterview({
 
       if (userMessage.toLowerCase().includes("end interview")) {
         await speak(reply);
-        const evaluation = generateEvaluation();
-        setTimeout(() => onEndInterview(evaluation), 15000);
+        const evaluation = await generateEvaluation();
+        setTimeout(() => onEndInterview(evaluation), 5000);
       } else {
         await speak(reply);
       }
@@ -370,7 +378,7 @@ export function VoiceInterview({
   }, [isRecording, startRecording, stopRecording]);
 
   // End call with evaluation
-  const endCall = useCallback(() => {
+  const endCall = useCallback(async () => {
     stopRecording();
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(t => t.stop());
@@ -382,7 +390,7 @@ export function VoiceInterview({
     setIsRecording(false);
     setIsSpeaking(false);
 
-    const evaluation = generateEvaluation();
+    const evaluation = await generateEvaluation();
     onEndInterview(evaluation);
   }, [onEndInterview, generateEvaluation, stopRecording]);
 
