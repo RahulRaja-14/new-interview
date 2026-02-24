@@ -328,44 +328,49 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
     setCameraActive(false);
 
     const durationSeconds = (Date.now() - startTime) / 1000;
-    const speechMetrics = analyzeSpeech(userTranscripts, durationSeconds);
-    const confidenceIndicators = calculateConfidenceIndicators(speechMetrics, durationSeconds);
 
-    const participationScore = Math.min(10, Math.round(userTranscripts.length * 1.5));
-    const grammarScore = Math.max(4, 10 - speechMetrics.grammarIssues.length);
-    const communicationScore = Math.min(10, Math.round(
-      (speechMetrics.averageWordsPerMinute >= 120 && speechMetrics.averageWordsPerMinute <= 160) ? 8 : 6
-    ) + (speechMetrics.fillerCount < 5 ? 2 : 0));
+    try {
+      const { data, error } = await supabase.functions.invoke("evaluate-session", {
+        body: {
+          type: "gd",
+          messages,
+          userTranscripts,
+          topic,
+          durationSeconds,
+        },
+      });
 
-    const evaluation: GDEvaluation = {
-      type: "gd",
-      communication: communicationScore,
-      grammarUsage: grammarScore,
-      leadership: Math.min(10, participationScore + (userTranscripts.length > 3 ? 2 : 0)),
-      confidence: confidenceIndicators.confidenceLevel === "High" ? 9 :
-                  confidenceIndicators.confidenceLevel === "Medium" ? 7 : 5,
-      overallGDScore: Math.round((communicationScore + grammarScore + participationScore +
-                      (confidenceIndicators.confidenceLevel === "High" ? 9 : 7)) / 4),
-      whatWentWell: [
-        userTranscripts.length >= 3 ? "Good participation - spoke multiple times" : "Participated in discussion",
-        speechMetrics.fillerCount < 5 ? "Clear speech with minimal filler words" : "Engaged actively",
-        "Stayed on topic throughout the discussion"
-      ],
-      lostPoints: [
-        ...(speechMetrics.grammarIssues.length > 0 ? ["Some grammar issues in responses"] : []),
-        ...(userTranscripts.length < 3 ? ["Could have participated more actively"] : []),
-        ...(speechMetrics.fillerCount > 5 ? ["Excessive use of filler words"] : [])
-      ],
-      improvementTips: [
-        "Practice speaking on diverse topics daily",
-        "Read newspapers to improve vocabulary and current affairs knowledge",
-        "Join debate clubs or discussion groups for more practice",
-        "Work on reducing filler words by pausing instead"
-      ]
-    };
+      if (error) throw error;
 
-    onEndDiscussion(evaluation);
-  }, [startTime, userTranscripts, onEndDiscussion, stopRecording]);
+      const evaluation: GDEvaluation = {
+        type: "gd",
+        communication: data.communication ?? 5,
+        grammarUsage: data.grammarUsage ?? 5,
+        leadership: data.leadership ?? 5,
+        confidence: data.confidence ?? 5,
+        overallGDScore: data.overallGDScore ?? 5,
+        whatWentWell: data.whatWentWell ?? ["Participated in the discussion"],
+        lostPoints: data.lostPoints ?? [],
+        improvementTips: data.improvementTips ?? ["Practice more"],
+      };
+
+      onEndDiscussion(evaluation);
+    } catch (err) {
+      console.error("Evaluation error:", err);
+      // Fallback to basic evaluation
+      onEndDiscussion({
+        type: "gd",
+        communication: 5,
+        grammarUsage: 5,
+        leadership: 5,
+        confidence: 5,
+        overallGDScore: 5,
+        whatWentWell: ["Participated in the discussion"],
+        lostPoints: ["Could not generate detailed evaluation"],
+        improvementTips: ["Practice speaking on diverse topics daily"],
+      });
+    }
+  }, [startTime, userTranscripts, messages, topic, onEndDiscussion, stopRecording]);
 
   // Show each bot message one at a time, synced with voice
   const speakResponsesSequentially = useCallback(async (
