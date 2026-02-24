@@ -1,7 +1,12 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { corsHeaders } from "../_shared/cors.ts";
+// Modern Deno.serve doesn't require an explicit import from std/http
+export { };
 
-serve(async (req) => {
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
+};
+
+Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
@@ -21,11 +26,11 @@ serve(async (req) => {
 
     const audioBytes = new Uint8Array(await audioFile.arrayBuffer());
 
-    // Convert to base64 in chunks to avoid stack overflow
+    // Chunk the conversion to avoid stack overflow for large files
     let binary = "";
     const chunkSize = 8192;
     for (let i = 0; i < audioBytes.length; i += chunkSize) {
-      const chunk = audioBytes.subarray(i, Math.min(i + chunkSize, audioBytes.length));
+      const chunk = audioBytes.subarray(i, i + chunkSize);
       binary += String.fromCharCode(...chunk);
     }
     const base64Audio = btoa(binary);
@@ -38,24 +43,26 @@ serve(async (req) => {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
+        model: "google/gemini-1.5-flash",
         messages: [
           {
             role: "user",
             content: [
               {
                 type: "text",
-                text: "Transcribe this audio file accurately. Return ONLY the transcribed text."
+                text: "Transcribe the following audio exactly as spoken. Return ONLY the transcribed text, nothing else. If the audio is silent or unclear, return an empty string."
               },
               {
-                type: "image_url",
-                image_url: {
-                  url: `data:audio/wav;base64,${base64Audio}`
+                type: "input_audio",
+                input_audio: {
+                  data: base64Audio,
+                  format: audioFile.type?.includes("wav") ? "wav" : "mp3"
                 }
               }
             ]
           }
         ],
+        max_tokens: 1000,
       }),
     });
 

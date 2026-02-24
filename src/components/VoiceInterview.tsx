@@ -45,8 +45,6 @@ export function VoiceInterview({
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const recognitionRef = useRef<any>(null);
-  const isActiveRef = useRef(false);
-
 
   const animFrameRef = useRef<number | null>(null);
   const finalTranscriptRef = useRef<string>("");
@@ -146,6 +144,8 @@ export function VoiceInterview({
           userTranscripts,
           durationSeconds,
           cameraEnabled,
+          resumeText,
+          jobDescription,
         },
       });
 
@@ -155,6 +155,8 @@ export function VoiceInterview({
         type: "interview",
         grammarAccuracy: data.grammarAccuracy ?? 5,
         speechClarity: data.speechClarity ?? 5,
+        problemSolving: data.problemSolving ?? 5,
+        behavioralFit: data.behavioralFit ?? 5,
         confidenceLevel: data.confidenceLevel ?? "Medium",
         fearIndicator: data.fearIndicator ?? "Moderate",
         nonVerbalScore: data.nonVerbalScore ?? 5,
@@ -170,6 +172,8 @@ export function VoiceInterview({
         type: "interview",
         grammarAccuracy: 5,
         speechClarity: 5,
+        problemSolving: 5,
+        behavioralFit: 5,
         confidenceLevel: "Medium",
         fearIndicator: "Moderate",
         nonVerbalScore: 5,
@@ -184,8 +188,7 @@ export function VoiceInterview({
 
   // Get AI response
   const getAIResponse = useCallback(async (userMessage: string) => {
-    if (!isActiveRef.current) return;
-
+    if (!isConnected) return;
     setIsProcessing(true);
     setUserTranscripts(prev => [...prev, userMessage]);
 
@@ -203,8 +206,7 @@ export function VoiceInterview({
       });
 
       if (error) throw error;
-      if (!isActiveRef.current) return;
-
+      if (!isConnected) return;
 
       const reply = data.reply;
       setMessages([...newMessages, { role: "assistant", content: reply }]);
@@ -214,17 +216,17 @@ export function VoiceInterview({
         await speak(reply);
         const evaluation = await generateEvaluation();
         setTimeout(() => onEndInterview(evaluation), 5000);
-      } else if (isActiveRef.current) {
+      } else if (isConnected) {
         await speak(reply);
-        if (isActiveRef.current) startRecording();
+        if (isConnected) startRecording();
       }
-
     } catch (error) {
-      console.error("AI Error:", error);
+      console.error("AI Error details:", error);
+      const errorMessage = error instanceof Error ? error.message : "Failed to get response. Please try again.";
       toast({
         variant: "destructive",
         title: "Connection Error",
-        description: "Failed to get response. Please try again.",
+        description: errorMessage,
       });
       setIsProcessing(false);
     }
@@ -295,8 +297,7 @@ export function VoiceInterview({
     // Stop high-accuracy recorder and process
     if (mediaRecorderRef.current && isRecording) {
       mediaRecorderRef.current.onstop = async () => {
-        if (!isActiveRef.current) return;
-
+        if (!isConnected) return;
         const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
         const text = await transcribeAudio(audioBlob);
 
@@ -318,9 +319,7 @@ export function VoiceInterview({
     if (!stream) return;
 
     setIsConnected(true);
-    isActiveRef.current = true;
     setStartTime(Date.now());
-
 
     try {
       const { data, error } = await supabase.functions.invoke("interview-chat", {
@@ -333,15 +332,12 @@ export function VoiceInterview({
       });
 
       if (error) throw error;
-      if (!isActiveRef.current) return;
-
 
       const greeting = data.reply;
       setMessages([{ role: "assistant", content: greeting }]);
       setLastSpokenText(greeting);
       await speak(greeting);
-      if (isActiveRef.current) startRecording();
-
+      if (isConnected) startRecording();
     } catch (error) {
       console.error("Start Error:", error);
       toast({
@@ -395,13 +391,14 @@ export function VoiceInterview({
     }
     window.speechSynthesis.cancel();
     setIsConnected(false);
-    isActiveRef.current = false;
     setIsRecording(false);
-
-    setIsSpeaking(false);
-
-    const evaluation = await generateEvaluation();
-    onEndInterview(evaluation);
+    setIsProcessing(true);
+    try {
+      const evaluation = await generateEvaluation();
+      onEndInterview(evaluation);
+    } finally {
+      setIsProcessing(false);
+    }
   }, [onEndInterview, generateEvaluation, stopRecording]);
 
   // Cleanup on unmount
@@ -452,7 +449,7 @@ export function VoiceInterview({
               isSpeaking && "ring-4 ring-primary/50 ring-offset-4 ring-offset-background animate-pulse"
             )}
           >
-            <div className="text-6xl font-bold text-primary-foreground">AI</div>
+            <div className="text-4xl font-bold text-primary-foreground">Rahul</div>
           </div>
           {isSpeaking && (
             <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 flex items-center gap-1">
@@ -493,7 +490,7 @@ export function VoiceInterview({
                     : isProcessing
                       ? "Processing..."
                       : isSpeaking
-                        ? "Interviewer is speaking"
+                        ? "Rahul is speaking"
                         : isRecording
                           ? "Recording... (click mic to send)"
                           : "Microphone off"}

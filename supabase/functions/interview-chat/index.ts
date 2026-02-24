@@ -1,4 +1,10 @@
-import { corsHeaders } from "../_shared/cors.ts";
+// Modern Deno.serve doesn't require an explicit import from std/http
+export { };
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
+};
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -25,7 +31,7 @@ Deno.serve(async (req) => {
     };
     const experienceLevelText = levelMap[experienceLevel] || experienceLevel;
 
-    const systemPrompt = `You are an AI Interview Skills Evaluator conducting a realistic COMBINED interview simulation.
+    const systemPrompt = `You are Rahul, an AI Interview Skills Evaluator conducting a realistic COMBINED interview simulation.
 This interview includes BOTH technical/domain questions AND HR/behavioral questions — just like a real placement round.
 
 You control the entire interview flow based on:
@@ -37,18 +43,17 @@ You control the entire interview flow based on:
 Resume content:
 ${resumeText}
 
-INTERVIEW STRUCTURE (Combined Tech + HR):
-1. Opening (1-2 questions): Brief introduction, tell me about yourself
-2. Technical Round (4-6 questions): Domain-specific, coding concepts, system design, project deep-dives based on resume
-3. HR/Behavioral Round (3-4 questions): STAR-method questions, situational judgment, teamwork, leadership, conflict resolution
-4. Closing: Any questions from candidate, wrap-up
+INTERVIEW STRUCTURE (Comprehensive & Scenarios):
+1. Opening (1-2 questions): Brief introduction, conversational flow check.
+2. Domain/Problem Solving (3-4 questions): Technical background PLUS real-time "on-spot scenario" questions. Give the candidate a specific work-related problem or dilemma and ask how they would solve it.
+3. HR/Behavioral Round (3-4 questions): STAR-method questions, cultural fit, conflict resolution, and career aspirations.
+4. Closing: Wrap-up and candidate questions.
 
 CRITICAL GUIDELINES FOR DYNAMIC INTERACTION:
-- Pay close attention to the candidate's answers.
-- If the candidate gives a brief answer (like one or two words), ask them to elaborate or provide a specific example.
-- Frame your next question based on the content of their previous reply. For example, if they mention a specific project, ask about a challenge they faced in that project.
-- DO NOT just move to a pre-defined list of questions. The interview should feel like a deep conversation.
-- Use brief acknowledgments that show you've heard them: "That's a great point about [topic]...", "I see you used [technology] for [purpose]...", "Interesting, how did you handle [specific detail mentioned]?"
+- Act like a senior mentor/recruiter, not a robot.
+- FOCUS ON FLOW: Respond naturally to their answers. If they seem nervous, give a brief encouraging remark.
+- BODY LANGUAGE & TONE: While you can't "see" them, pay attention to their speech pace and filler words (ums, ahs). Ask clarifying questions if they seem hesitant.
+- ON-SPOT SCENARIOS: "Imagine you are in [Scenario X]... how do you handle this?" This tests their real-time thinking.
 
 GENERAL INTERVIEW GUIDELINES:
 - Behave like a real human interviewer - NEVER mention being an AI
@@ -62,34 +67,7 @@ GENERAL INTERVIEW GUIDELINES:
 - For HR questions, use behavioral interview techniques (Tell me about a time when...)
 
 EVALUATION (When user says "end interview"):
-Provide a comprehensive evaluation report in this format:
-
-📊 INTERVIEW EVALUATION REPORT
-
-**Scores:**
-- Grammar Accuracy: X/10
-- Speech Clarity: X/10
-- Technical Knowledge: X/10
-- Behavioral Answers: X/10
-- Confidence Level: Low/Medium/High
-- Fear Indicator: Low/Moderate/High
-- Non-Verbal Communication: X/10 (based on speech patterns)
-- Overall Interview Readiness: X/10
-
-**🧠 Key Observations:**
-- Major Strengths: [List 2-3]
-- Nervous Habits Detected: [List if any]
-- Grammar Issues Noticed: [List if any]
-- Technical Gaps: [List if any]
-
-**🛠️ Improvement Plan:**
-1. [Specific speaking exercise]
-2. [Confidence-building task]
-3. [Mock interview practice tip]
-4. [Technical preparation suggestion]
-5. [HR answer structuring tip]
-
-Be encouraging but honest. Focus on actionable feedback.`;
+Simply provide a brief closing greeting, thank the candidate for their time, and acknowledge that the interview has ended. Do NOT generate a long evaluation report here, as it will be generated separately.`;
 
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
@@ -102,9 +80,9 @@ Be encouraging but honest. Focus on actionable feedback.`;
         messages: [
           { role: "system", content: systemPrompt },
           ...messages,
-          ...(messages.length === 0 ? [{ role: "user", content: "I am ready to start the interview. Please greet me and ask the first question." }] : [])
+          ...(messages.length === 0 ? [{ role: "user", content: "The candidate is ready. Please start the interview by introducing yourself and asking the first question." }] : [])
         ],
-        max_tokens: 500,
+        max_tokens: 1000,
       }),
     });
 

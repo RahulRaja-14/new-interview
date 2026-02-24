@@ -50,7 +50,6 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
   const finalTranscriptRef = useRef<string>("");
   const getGDResponseRef = useRef<(text: string) => void>(() => { });
   const isActiveRef = useRef<boolean>(false);
-
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const { toast } = useToast();
@@ -88,7 +87,6 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
   const initRecognition = useCallback(() => {
     const SpeechRecognitionAPI = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognitionAPI) return null;
-
     const recognition = new SpeechRecognitionAPI();
     recognition.continuous = true;
     recognition.interimResults = true;
@@ -115,7 +113,6 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
         resolve();
         return;
       }
-
       setIsSpeaking(true);
       setCurrentSpeaker(speaker);
 
@@ -231,7 +228,6 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
       recognitionRef.current = recognition;
       try { recognition.start(); } catch (e) { }
     }
-
     setIsRecording(true);
   }, [initRecognition]);
 
@@ -365,6 +361,14 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
 
       const responses = data.responses as Array<{ speaker: string; content: string }>;
 
+      if (data.isOffTopic) {
+        toast({
+          variant: "destructive",
+          title: "Topic Deviation Detected",
+          description: "Please stay focused on the discussion topic to improve your score.",
+        });
+      }
+
       setIsProcessing(false);
       setTurnCount(prev => prev + 1);
 
@@ -377,7 +381,6 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
           startRecording();
         }
       }
-
     } catch (error) {
       console.error("GD Error:", error);
       toast({
@@ -423,7 +426,7 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
     if (isActiveRef.current && isStarted && streamRef.current) {
       startRecording();
     }
-  }, [topic, speak, initMicrophone, startRecording, isStarted]);
+  }, [topic, speak, initMicrophone, startRecording]);
 
   // End GD
   const endGD = useCallback(async () => {
@@ -487,7 +490,6 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
     }
   }, [startTime, userTranscripts, messages, topic, onEndDiscussion, stopRecording]);
 
-  // No longer needed here as it was moved up
 
   // Toggle recording
   const toggleRecording = useCallback(() => {
@@ -563,15 +565,14 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
                 <ArrowRight className="h-4 w-4 ml-2" />
               </Button>
             </div>
-          </CardContent>
-        </Card>
-      </div>
+          </CardContent >
+        </Card >
+      </div >
     );
   }
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
-
 
       {/* Header */}
       <div className="p-4 border-b border-border bg-card">
@@ -673,6 +674,6 @@ export function GroupDiscussion({ topic, onEndDiscussion, onCancel }: GroupDiscu
           </p>
         </div>
       </div>
-    </div>
+    </div >
   );
 }

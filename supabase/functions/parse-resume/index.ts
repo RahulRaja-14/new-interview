@@ -1,4 +1,10 @@
-import { corsHeaders } from "../_shared/cors.ts";
+// Modern Deno.serve doesn't require an explicit import from std/http
+export { };
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -50,7 +56,7 @@ Deno.serve(async (req) => {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "google/gemini-2.5-flash",
+          model: "google/gemini-1.5-flash",
           messages: [
             {
               role: "user",

@@ -20,6 +20,8 @@ export interface InterviewEvaluation {
   type: "interview";
   grammarAccuracy: number;
   speechClarity: number;
+  problemSolving: number;
+  behavioralFit: number;
   confidenceLevel: "Low" | "Medium" | "High";
   fearIndicator: "Low" | "Moderate" | "High";
   nonVerbalScore: number;
@@ -118,7 +120,9 @@ export function EvaluationReport({ evaluation, onRestart, onBackToModules }: Eva
           {/* Scores Grid */}
           <div className="grid gap-3">
             <ScoreCard label="Grammar Accuracy" score={evaluation.grammarAccuracy} icon={MessageSquare} />
-            <ScoreCard label="Speech Clarity" score={evaluation.speechClarity} icon={Volume2} />
+            <ScoreCard label="Speech Clarity & Flow" score={evaluation.speechClarity} icon={Volume2} />
+            <ScoreCard label="Problem Solving Ability" score={evaluation.problemSolving} icon={Brain} />
+            <ScoreCard label="HR & Behavioral Fit" score={evaluation.behavioralFit} icon={Users} />
             <ScoreCard label="Non-Verbal Communication" score={evaluation.nonVerbalScore} icon={Eye} />
           </div>
 

@@ -1,4 +1,10 @@
-import { corsHeaders } from "../_shared/cors.ts";
+// Modern Deno.serve doesn't require an explicit import from std/http
+export { };
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
+};
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -14,6 +20,14 @@ Deno.serve(async (req) => {
       isStart?: boolean;
       isAIInitiating?: boolean;
     };
+
+    interface ChatCompletionResponse {
+      choices: Array<{
+        message: {
+          content: string;
+        };
+      }>;
+    }
 
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
 
@@ -38,15 +52,26 @@ YOUR ROLE:
   * Ananya: Balanced, diplomatic, builds on others' points
 
 GD GUIDELINES:
-${isAIInitiating ? `
-AI INITIATING THE GD:
+1. TOPIC ADHERENCE:
+   - Carefully monitor every participant's input (especially the user's) for relevance to "${topic}".
+   - If the user's last response is irrelevant, off-topic, or nonsensical relative to the discussion, set "isOffTopic" to true in the response.
+   - The Moderator MUST intervene if anyone deviates. 
+   - CRITICAL: The Moderator MUST explicitly name or address the person who is off-topic.
+   - Intervention Style (User): "Wait, candidate, I think you're straying from the topic. Let's get back to ${topic}." or "Let's try to keep our discussion focused on ${topic}."
+   - Intervention Style (AI): "Rahul, that's an interesting point, but it seems a bit off-topic. Let's stick to ${topic}."
+
+2. CONTINUITY:
+${isStart ? `
+- The Moderator MUST clearly introduce the topic: "${topic}".
+- The Moderator MUST explicitly state the rules and conclude with a phrase like "The floor is now open for discussion. Who would like to initiate?"
+- Return exactly 1 response: Moderator intro.
+` : isAIInitiating ? `
 - Since the user did not speak yet, pick one participant (Priya, Rahul, or Ananya) to start.
 - They should start with a strong opening point related to "${topic}".
 - Return exactly 1 response: The participant's opening point.
 ` : `
-CONTINUING THE GD:
-- Based on what the user said, have 1-2 participants respond
-- Participants should react naturally, showing they are LISTENING:
+- Based on what the user said, have 1-2 participants respond.
+- Participants should react naturally, showing they are LISTENING and STAYING ON TOPIC.
   * Build on the user's points or challenge them respectfully.
   * Occasionally ask the user questions to test their knowledge.
 - Keep responses concise (2-3 sentences each).
@@ -63,29 +88,11 @@ Return a JSON object with:
   "responses": [
     { "speaker": "Participant Name or Moderator", "content": "What they say" }
   ],
-  "shouldEnd": false
+  "shouldEnd": false,
+  "isOffTopic": boolean (true ONLY if the user's last message was off-topic)
 }
 
 Keep the discussion dynamic and engaging. Challenge the user's points constructively.`;
-
-    // Prepare messages for Gemini, ensuring role alternation
-    const geminiMessages = messages.map(m => ({
-      role: m.role === "user" ? "user" : "assistant",
-      content: m.speaker ? `[${m.speaker}]: ${m.content}` : m.content
-    }));
-
-    const instruction = isAIInitiating
-      ? "No one has spoken yet. One participant (Priya, Rahul, or Ananya) should take the initiative and start the discussion now."
-      : "Generate participant responses to continue the GD naturally.";
-
-    // Logic to prevent consecutive 'user' or 'assistant' roles
-    if (geminiMessages.length > 0 && geminiMessages[geminiMessages.length - 1].role === "user") {
-      // Append instruction to last user message content
-      geminiMessages[geminiMessages.length - 1].content += `\n\nInstruction: ${instruction}`;
-    } else {
-      // Add a new user message for the instruction
-      geminiMessages.push({ role: "user", content: instruction });
-    }
 
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
@@ -97,7 +104,11 @@ Keep the discussion dynamic and engaging. Challenge the user's points constructi
         model: "google/gemini-2.0-flash",
         messages: [
           { role: "system", content: systemPrompt },
-          ...geminiMessages
+          ...messages.map(m => ({
+            role: m.role === "user" ? "user" : "assistant",
+            content: m.speaker ? `[${m.speaker}]: ${m.content}` : m.content
+          })),
+          ...(isStart ? [] : isAIInitiating ? [{ role: "user", content: "No one has spoken yet. One participant should start the discussion now." }] : [{ role: "user", content: "Generate participant responses to continue the GD." }])
         ],
         max_tokens: 500,
         response_format: { type: "json_object" }
@@ -109,7 +120,7 @@ Keep the discussion dynamic and engaging. Challenge the user's points constructi
       throw new Error(`AI API error: ${error}`);
     }
 
-    const data = await response.json();
+    const data = await response.json() as ChatCompletionResponse;
     const content = data.choices[0]?.message?.content || '{"responses":[],"shouldEnd":false}';
 
     let parsed;
