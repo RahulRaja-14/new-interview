@@ -42,7 +42,7 @@ export function VoiceInterview({
 
   const streamRef = useRef<MediaStream | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  
   const animFrameRef = useRef<number | null>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const finalTranscriptRef = useRef<string>("");
@@ -108,44 +108,36 @@ export function VoiceInterview({
     return recognition;
   }, [toast, isRecording]);
 
-  // Text to speech using ElevenLabs
-  const speak = useCallback(async (text: string) => {
+  // Text to speech using browser SpeechSynthesis (free)
+  const speak = useCallback((text: string) => {
     setIsSpeaking(true);
     setLastSpokenText(text);
 
-    try {
-      const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/elevenlabs-tts`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-          },
-          body: JSON.stringify({ text, voiceId: "JBFqnCBsd6RMkjVDRZzb" }),
-        }
-      );
+    return new Promise<void>((resolve) => {
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 1;
+      utterance.pitch = 1;
+      utterance.volume = 1;
 
-      if (!response.ok) throw new Error("TTS request failed");
+      const voices = speechSynthesis.getVoices();
+      const preferred = voices.find(v => v.name.includes("Google") && v.lang.startsWith("en"))
+        || voices.find(v => v.lang.startsWith("en-") && !v.localService)
+        || voices.find(v => v.lang.startsWith("en"));
+      if (preferred) utterance.voice = preferred;
 
-      const audioBlob = await response.blob();
-      const audioUrl = URL.createObjectURL(audioBlob);
+      utterance.onend = () => {
+        setIsSpeaking(false);
+        resolve();
+      };
+      utterance.onerror = () => {
+        setIsSpeaking(false);
+        resolve();
+      };
 
-      if (audioRef.current) {
-        audioRef.current.src = audioUrl;
-        await audioRef.current.play();
-      }
-    } catch (error) {
-      console.error("TTS Error:", error);
-      toast({
-        variant: "destructive",
-        title: "Voice Error",
-        description: "Failed to generate speech. Please try again.",
-      });
-      setIsSpeaking(false);
-    }
-  }, [toast]);
+      speechSynthesis.cancel();
+      speechSynthesis.speak(utterance);
+    });
+  }, []);
 
   // Generate evaluation from AI
   const generateEvaluation = useCallback(async (): Promise<InterviewEvaluation> => {
@@ -225,6 +217,7 @@ export function VoiceInterview({
         setTimeout(() => onEndInterview(evaluation), 5000);
       } else {
         await speak(reply);
+        startRecording();
       }
     } catch (error) {
       console.error("AI Error:", error);
@@ -318,6 +311,7 @@ export function VoiceInterview({
       const greeting = data.reply;
       setMessages([{ role: "assistant", content: greeting }]);
       await speak(greeting);
+      startRecording();
     } catch (error) {
       console.error("Start Error:", error);
       toast({
@@ -329,21 +323,7 @@ export function VoiceInterview({
     }
   }, [resumeText, experienceLevel, jobDescription, speak, toast, initMicrophone]);
 
-  // Audio element event handlers - start recording after AI finishes speaking
-  useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
-
-    const handleEnded = () => {
-      setIsSpeaking(false);
-      if (isConnected) {
-        startRecording();
-      }
-    };
-
-    audio.addEventListener("ended", handleEnded);
-    return () => audio.removeEventListener("ended", handleEnded);
-  }, [isConnected, startRecording]);
+  // No longer needed - browser speechSynthesis handles TTS completion inline
 
   // Audio level visualization
   useEffect(() => {
@@ -383,9 +363,7 @@ export function VoiceInterview({
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(t => t.stop());
     }
-    if (audioRef.current) {
-      audioRef.current.pause();
-    }
+    speechSynthesis.cancel();
     setIsConnected(false);
     setIsRecording(false);
     setIsSpeaking(false);
@@ -405,7 +383,7 @@ export function VoiceInterview({
 
   return (
     <div className="min-h-screen bg-background flex flex-col lg:flex-row">
-      <audio ref={audioRef} className="hidden" />
+      
 
       {/* Main Interview Area */}
       <div className="flex-1 flex flex-col items-center justify-center p-4">
